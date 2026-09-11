@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lectern &mdash; PDF Audio Reader</title>
+<meta name="description" content="Upload a PDF and have it read aloud, right in your browser. No uploads, no accounts." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%2314161c'/%3E%3Cpath d='M20 30 h60 M20 50 h60 M20 70 h35' stroke='%23d98a3d' stroke-width='8' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #f0f1f4;
+    --surface: #ffffff;
+    --surface-2: #e8eaef;
+    --ink: #1b1d24;
+    --ink-dim: #666b78;
+    --ink-faint: #9297a3;
+    --accent: #b5691d;
+    --accent-ink: #fff8ef;
+    --line: rgba(20, 22, 30, 0.12);
+    --line-soft: rgba(20, 22, 30, 0.07);
+    --danger: #b3413a;
+    --shadow: 0 1px 2px rgba(20,22,30,0.05), 0 8px 24px -12px rgba(20,22,30,0.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161c;
+      --surface: #1c1f27;
+      --surface-2: #242833;
+      --ink: #eceef2;
+      --ink-dim: #9298a6;
+      --ink-faint: #666c7a;
+      --accent: #d98a3d;
+      --accent-ink: #1b1206;
+      --line: rgba(255, 255, 255, 0.09);
+      --line-soft: rgba(255, 255, 255, 0.05);
+      --danger: #e08078;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -14px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161c;
+    --surface: #1c1f27;
+    --surface-2: #242833;
+    --ink: #eceef2;
+    --ink-dim: #9298a6;
+    --ink-faint: #666c7a;
+    --accent: #d98a3d;
+    --accent-ink: #1b1206;
+    --line: rgba(255, 255, 255, 0.09);
+    --line-soft: rgba(255, 255, 255, 0.05);
+    --danger: #e08078;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -14px rgba(0,0,0,0.6);
+  }
+
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Public Sans", -apple-system, "Segoe UI", sans-serif;
+    padding: 32px 20px 56px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---------- Header ---------- */
+  header.top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .brand h1 {
+    font-family: "Fraunces", Georgia, serif;
+    font-optical-sizing: auto;
+    font-weight: 600;
+    font-size: 1.7rem;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .brand .mark {
+    color: var(--accent);
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+  }
+  .tagline {
+    color: var(--ink-dim);
+    font-size: 0.92rem;
+    margin: 2px 0 0;
+  }
+  .privacy-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--ink-dim);
+    border: 1px solid var(--line);
+    border-radius: 100px;
+    padding: 5px 12px;
+    white-space: nowrap;
+    background: var(--surface);
+  }
+  .privacy-pill .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #5c9a6b;
+    flex: none;
+  }
+
+  /* ---------- Panel shell ---------- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  /* ---------- Drop zone ---------- */
+  .dropzone {
+    padding: 34px 24px;
+    text-align: center;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    transition: background 0.15s ease;
+  }
+  .dropzone:hover, .dropzone.drag-over { background: var(--surface-2); }
+  .dropzone .slot {
+    width: 52px;
+    height: 40px;
+    border-radius: 6px;
+    border: 2px solid var(--accent);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dropzone .slot::before {
+    content: "";
+    width: 26px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  .dropzone .title { font-family: "Fraunces", Georgia, serif; font-size: 1.15rem; font-weight: 500; }
+  .dropzone .hint { color: var(--ink-dim); font-size: 0.85rem; }
+  .dropzone .hint b { color: var(--ink); font-weight: 600; }
+  #file-input { display: none; }
+
+  /* ---------- Loading state ---------- */
+  .loading-row {
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .loading-row .label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-track {
+    height: 6px;
+    border-radius: 100px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 100px;
+    width: 0%;
+    transition: width 0.2s ease;
+  }
+
+  /* ---------- Reader ---------- */
+  .reader-head {
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .doc-title { font-family: "Fraunces", Georgia, serif; font-weight: 600; font-size: 1.05rem; text-wrap: balance; }
+  .doc-meta { color: var(--ink-faint); font-size: 0.78rem; margin-top: 3px; }
+  .swap-btn {
+    flex: none;
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 100px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .swap-btn:hover { color: var(--ink); }
+
+  .text-pane {
+    padding: 20px 22px;
+    max-height: 220px;
+    overflow-y: auto;
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--ink-dim);
+  }
+  .text-pane .blk { margin: 0 0 0.85em; }
+  .text-pane .blk:last-child { margin-bottom: 0; }
+  .text-pane .sent { transition: background 0.15s ease, color 0.15s ease; border-radius: 3px; }
+  .text-pane .sent.active {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--ink);
+    font-weight: 500;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .text-pane .page-tag {
+    display: block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 1.1em 0 0.5em;
+  }
+  .text-pane .page-tag:first-child { margin-top: 0; }
+
+  /* ---------- Instrument readout ---------- */
+  .readout {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--surface-2);
+  }
+  .readout .cell {
+    padding: 14px 10px;
+    text-align: center;
+    border-left: 1px solid var(--line-soft);
+  }
+  .readout .cell:first-child { border-left: none; }
+  .readout .cell .num {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 1.28rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .readout .cell .lbl {
+    font-size: 0.68rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 3px;
+  }
+
+  /* ---------- Progress rail ---------- */
+  .rail-wrap { padding: 18px 22px 6px; }
+  input[type="range"].rail {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 8px;
+    border-radius: 100px;
+    background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 0%), var(--surface-2) var(--pct, 0%), var(--surface-2) 100%);
+    outline: none;
+    cursor: pointer;
+    margin: 0;
+  }
+  input[type="range"].rail::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 3px solid var(--surface);
+    box-shadow: 0 0 0 1px var(--line);
+    cursor: pointer;
+    margin-top: -5px;
+  }
+  input[type="range"].rail::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); border: 3px solid var(--surface);
+    box-shadow: 0 0 0 1px var(--line); cursor: pointer;
+  }
+  input[type="range"].rail::-moz-range-track { height: 8px; border-radius: 100px; background: transparent; }
+  .rail-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.7rem;
+    color: var(--ink-faint);
+    padding: 6px 2px 0;
+  }
+
+  /* ---------- Transport ---------- */
+  .transport {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 14px 22px 22px;
+  }
+  .tbtn {
+    flex: none;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background 0.15s ease, transform 0.05s ease;
+  }
+  .tbtn:active { transform: scale(0.94); }
+  .tbtn.skip { width: 44px; height: 44px; color: var(--ink-dim); }
+  .tbtn.skip:hover { background: var(--surface-2); color: var(--ink); }
+  .tbtn.skip svg { width: 20px; height: 20px; }
+  .tbtn.play {
+    width: 62px; height: 62px;
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .tbtn.play:hover { filter: brightness(1.06); }
+  .tbtn.play svg { width: 24px; height: 24px; }
+  .tbtn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .tbtn:focus-visible, .swap-btn:focus-visible, .dropzone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- Settings strip ---------- */
+  .settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 22px;
+    padding: 16px 22px;
+    border-top: 1px solid var(--line-soft);
+    background: var(--surface-2);
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 200px; min-width: 150px; }
+  .field label {
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+  }
+  .field select, .field input[type="range"].speed {
+    font-family: "Public Sans", sans-serif;
+  }
+  .field select {
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 0.85rem;
+  }
+  input[type="range"].speed {
+    -webkit-appearance: none;
+    height: 6px;
+    border-radius: 100px;
+    background: var(--line);
+    outline: none;
+  }
+  input[type="range"].speed::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; margin-top: -4.5px;
+  }
+  input[type="range"].speed::-moz-range-thumb {
+    width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer;
+  }
+
+  .hidden { display: none !important; }
+
+  footer {
+    text-align: center;
+    color: var(--ink-faint);
+    font-size: 0.78rem;
+    line-height: 1.6;
+  }
+  footer a { color: var(--ink-dim); }
+
+  @media (max-width: 480px) {
+    .readout { grid-template-columns: repeat(3, 1fr); }
+    .readout .cell .num { font-size: 1.05rem; }
+    .transport { gap: 10px; }
+    .tbtn.play { width: 56px; height: 56px; }
+    .settings { padding: 14px 16px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <div class="brand">
+        <h1>Lectern</h1>
+        <span class="mark">for PDFs</span>
+      </div>
+      <p class="tagline">Upload a PDF, listen to it read aloud, pick up right where you left off.</p>
+    </div>
+    <span class="privacy-pill"><span class="dot"></span>Runs in your browser &mdash; nothing is uploaded</span>
+  </header>
+
+  <div class="panel" id="dropzone-panel">
+    <button type="button" class="dropzone" id="dropzone">
+      <span class="slot"></span>
+      <span class="title">Drop a PDF here</span>
+      <span class="hint">or <b>click to browse</b> &middot; stays on your device</span>
+    </button>
+    <input type="file" id="file-input" accept="application/pdf" />
+  </div>
+
+  <div class="panel hidden" id="loading-panel">
+    <div class="loading-row">
+      <div class="label"><span id="loading-label">Reading pages&hellip;</span><span id="loading-pct">0%</span></div>
+      <div class="bar-track"><div class="bar-fill" id="loading-bar"></div></div>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="reader-panel">
+    <div class="reader-head">
+      <div>
+        <div class="doc-title" id="doc-title">&mdash;</div>
+        <div class="doc-meta" id="doc-meta">&mdash;</div>
+      </div>
+      <button type="button" class="swap-btn" id="swap-btn">Swap PDF</button>
+    </div>
+
+    <div class="text-pane" id="text-pane"></div>
+
+    <div class="readout">
+      <div class="cell">
+        <div class="num" id="pos-readout">0 / 0</div>
+        <div class="lbl">Page</div>
+      </div>
+      <div class="cell">
+        <div class="num" id="elapsed-readout">0:00</div>
+        <div class="lbl">Elapsed</div>
+      </div>
+      <div class="cell">
+        <div class="num" id="remaining-readout">0:00</div>
+        <div class="lbl">Remaining</div>
+      </div>
+    </div>
+
+    <div class="rail-wrap">
+      <input type="range" class="rail" id="rail" min="0" max="1000" value="0" aria-label="Reading progress" />
+      <div class="rail-ticks"><span id="rail-start">0:00</span><span id="rail-end">0:00</span></div>
+    </div>
+
+    <div class="transport">
+      <button type="button" class="tbtn skip" id="prev-btn" title="Previous sentence" aria-label="Previous sentence">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6v12M18 6l-9 6 9 6V6z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" class="tbtn play" id="play-btn" title="Play" aria-label="Play">
+        <svg id="play-icon" viewBox="0 0 24 24" fill="none"><path d="M7 5v14l12-7z" fill="currentColor"/></svg>
+        <svg id="pause-icon" class="hidden" viewBox="0 0 24 24" fill="none"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" class="tbtn skip" id="next-btn" title="Next sentence" aria-label="Next sentence">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M18 6v12M6 6l9 6-9 6V6z" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="settings">
+      <div class="field">
+        <label for="voice-select"><span>Voice</span></label>
+        <select id="voice-select"></select>
+      </div>
+      <div class="field">
+        <label for="speed-range"><span>Speed</span><span id="speed-val">1.0&times;</span></label>
+        <input type="range" class="speed" id="speed-range" min="0.5" max="2" step="0.05" value="1" />
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Text extraction and speech happen locally in your browser via pdf.js and the Web Speech API.<br />
+    Works best on text-based PDFs &mdash; scanned/image-only pages can't be read aloud.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+
+  var BASE_WPM = 165; // average natural narration pace at 1.0x
+
+  var els = {
+    dropzonePanel: document.getElementById("dropzone-panel"),
+    dropzone: document.getElementById("dropzone"),
+    fileInput: document.getElementById("file-input"),
+    loadingPanel: document.getElementById("loading-panel"),
+    loadingLabel: document.getElementById("loading-label"),
+    loadingPct: document.getElementById("loading-pct"),
+    loadingBar: document.getElementById("loading-bar"),
+    readerPanel: document.getElementById("reader-panel"),
+    docTitle: document.getElementById("doc-title"),
+    docMeta: document.getElementById("doc-meta"),
+    swapBtn: document.getElementById("swap-btn"),
+    textPane: document.getElementById("text-pane"),
+    posReadout: document.getElementById("pos-readout"),
+    elapsedReadout: document.getElementById("elapsed-readout"),
+    remainingReadout: document.getElementById("remaining-readout"),
+    rail: document.getElementById("rail"),
+    railStart: document.getElementById("rail-start"),
+    railEnd: document.getElementById("rail-end"),
+    prevBtn: document.getElementById("prev-btn"),
+    nextBtn: document.getElementById("next-btn"),
+    playBtn: document.getElementById("play-btn"),
+    playIcon: document.getElementById("play-icon"),
+    pauseIcon: document.getElementById("pause-icon"),
+    voiceSelect: document.getElementById("voice-select"),
+    speedRange: document.getElementById("speed-range"),
+    speedVal: document.getElementById("speed-val"),
+  };
+
+  var state = {
+    chunks: [],       // { text, page, words, sentEl }
+    totalWords: 0,
+    currentIndex: 0,
+    isPlaying: false,
+    numPages: 0,
+    fileKey: null,
+    rate: 1,
+  };
+
+  // ---------- persisted settings ----------
+  var prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem("lectern:prefs") || "{}"); } catch (e) { prefs = {}; }
+  if (prefs.rate) { state.rate = prefs.rate; els.speedRange.value = prefs.rate; }
+  els.speedVal.textContent = Number(els.speedRange.value).toFixed(2).replace(/0$/, "").replace(/\.$/, ".0") + "×";
+
+  function savePrefs() {
+    try {
+      localStorage.setItem("lectern:prefs", JSON.stringify({
+        rate: state.rate,
+        voiceURI: prefs.voiceURI,
+      }));
+    } catch (e) {}
+  }
+
+  function saveResume() {
+    if (!state.fileKey) return;
+    try {
+      var map = JSON.parse(localStorage.getItem("lectern:resume") || "{}");
+      map[state.fileKey] = { index: state.currentIndex, savedAt: Date.now() };
+      var keys = Object.keys(map);
+      if (keys.length > 20) {
+        keys.sort(function (a, b) { return map[a].savedAt - map[b].savedAt; });
+        delete map[keys[0]];
+      }
+      localStorage.setItem("lectern:resume", JSON.stringify(map));
+    } catch (e) {}
+  }
+
+  function loadResumeIndex(key) {
+    try {
+      var map = JSON.parse(localStorage.getItem("lectern:resume") || "{}");
+      return map[key] ? map[key].index : 0;
+    } catch (e) { return 0; }
+  }
+
+  // ---------- drag & drop / file picking ----------
+  els.dropzone.addEventListener("click", function () { els.fileInput.click(); });
+  els.dropzone.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); els.fileInput.click(); }
+  });
+  ["dragenter", "dragover"].forEach(function (evt) {
+    els.dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      els.dropzone.classList.add("drag-over");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (evt) {
+    els.dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      els.dropzone.classList.remove("drag-over");
+    });
+  });
+  els.dropzone.addEventListener("drop", function (e) {
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  els.fileInput.addEventListener("change", function () {
+    if (els.fileInput.files[0]) handleFile(els.fileInput.files[0]);
+  });
+  els.swapBtn.addEventListener("click", function () {
+    stopSpeaking();
+    els.readerPanel.classList.add("hidden");
+    els.dropzonePanel.classList.remove("hidden");
+    els.fileInput.value = "";
+  });
+
+  function handleFile(file) {
+    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+      alert("That doesn't look like a PDF. Please choose a .pdf file.");
+      return;
+    }
+    stopSpeaking();
+    els.dropzonePanel.classList.add("hidden");
+    els.readerPanel.classList.add("hidden");
+    els.loadingPanel.classList.remove("hidden");
+    els.loadingLabel.textContent = "Reading pages…";
+    setLoadingPct(0);
+
+    state.fileKey = file.name + ":" + file.size;
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      pdfjsLib.getDocument({ data: reader.result }).promise.then(function (pdf) {
+        extractAll(pdf, file.name);
+      }).catch(function (err) {
+        console.error(err);
+        els.loadingPanel.classList.add("hidden");
+        els.dropzonePanel.classList.remove("hidden");
+        alert("Couldn't open that PDF. It may be corrupted, encrypted, or not a valid PDF file.");
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function setLoadingPct(pct) {
+    els.loadingBar.style.width = pct + "%";
+    els.loadingPct.textContent = Math.round(pct) + "%";
+  }
+
+  function splitSentences(text) {
+    var out = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g);
+    if (!out) return [];
+    return out.map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+
+  function extractAll(pdf, fileName) {
+    state.numPages = pdf.numPages;
+    var chunks = [];
+    var pageIndex = 1;
+
+    function nextPage() {
+      if (pageIndex > pdf.numPages) {
+        finishExtraction(chunks, fileName);
+        return;
+      }
+      pdf.getPage(pageIndex).then(function (page) {
+        return page.getTextContent();
+      }).then(function (content) {
+        var lines = [];
+        var currentLine = "";
+        content.items.forEach(function (item) {
+          currentLine += item.str + (item.hasEOL ? "\n" : (item.str && !/\s$/.test(item.str) ? " " : ""));
+        });
+        var rawBlocks = currentLine.split(/\n\s*\n|\n(?=\s{0,2}\S)/).join("\n").split(/\n+/);
+        // Merge into paragraphs: treat consecutive non-empty lines as one flowing block
+        var paragraph = "";
+        var blocks = [];
+        rawBlocks.forEach(function (line) {
+          var t = line.replace(/\s+/g, " ").trim();
+          if (!t) { return; }
+          paragraph = paragraph ? paragraph + " " + t : t;
+        });
+        if (paragraph) blocks.push(paragraph);
+
+        blocks.forEach(function (block) {
+          splitSentences(block).forEach(function (sentence) {
+            var words = sentence.split(/\s+/).filter(Boolean).length;
+            if (words === 0) return;
+            chunks.push({ text: sentence, page: pageIndex, words: words });
+          });
+        });
+
+        setLoadingPct((pageIndex / pdf.numPages) * 100);
+        pageIndex++;
+        setTimeout(nextPage, 0);
+      }).catch(function () {
+        pageIndex++;
+        setTimeout(nextPage, 0);
+      });
+    }
+
+    nextPage();
+  }
+
+  function finishExtraction(chunks, fileName) {
+    if (chunks.length === 0) {
+      els.loadingPanel.classList.add("hidden");
+      els.dropzonePanel.classList.remove("hidden");
+      alert("No readable text found in this PDF. It's likely a scanned/image-only document, which this tool can't read aloud yet.");
+      return;
+    }
+    state.chunks = chunks;
+    state.totalWords = chunks.reduce(function (sum, c) { return sum + c.words; }, 0);
+    state.currentIndex = Math.min(loadResumeIndex(state.fileKey), chunks.length - 1);
+
+    buildTextPane();
+    els.docTitle.textContent = fileName.replace(/\.pdf$/i, "");
+    els.docMeta.textContent = state.numPages + (state.numPages === 1 ? " page" : " pages") + " · " + state.totalWords.toLocaleString() + " words";
+    els.rail.max = String(Math.max(chunks.length - 1, 1));
+
+    els.loadingPanel.classList.add("hidden");
+    els.readerPanel.classList.remove("hidden");
+
+    renderPosition(true);
+  }
+
+  function buildTextPane() {
+    els.textPane.innerHTML = "";
+    var lastPage = null;
+    var currentParaEl = null;
+    state.chunks.forEach(function (chunk, i) {
+      if (chunk.page !== lastPage) {
+        var tag = document.createElement("span");
+        tag.className = "page-tag";
+        tag.textContent = "Page " + chunk.page;
+        els.textPane.appendChild(tag);
+        currentParaEl = document.createElement("p");
+        currentParaEl.className = "blk";
+        els.textPane.appendChild(currentParaEl);
+        lastPage = chunk.page;
+      }
+      var span = document.createElement("span");
+      span.className = "sent";
+      span.textContent = chunk.text + " ";
+      span.dataset.index = i;
+      span.addEventListener("click", function () {
+        seekTo(i);
+      });
+      currentParaEl.appendChild(span);
+      chunk.el = span;
+    });
+  }
+
+  // ---------- voices ----------
+  var voicesReady = false;
+  function populateVoices() {
+    var voices = speechSynthesis.getVoices();
+    if (!voices.length) return;
+    voicesReady = true;
+    els.voiceSelect.innerHTML = "";
+    voices.forEach(function (v, i) {
+      var opt = document.createElement("option");
+      opt.value = v.voiceURI;
+      opt.textContent = v.name + " (" + v.lang + ")" + (v.default ? " — default" : "");
+      els.voiceSelect.appendChild(opt);
+    });
+    var pick = prefs.voiceURI && voices.some(function (v) { return v.voiceURI === prefs.voiceURI; })
+      ? prefs.voiceURI
+      : (voices.find(function (v) { return v.default; }) || voices[0]).voiceURI;
+    els.voiceSelect.value = pick;
+    prefs.voiceURI = pick;
+  }
+  populateVoices();
+  if (typeof speechSynthesis !== "undefined") {
+    speechSynthesis.onvoiceschanged = populateVoices;
+  }
+  els.voiceSelect.addEventListener("change", function () {
+    prefs.voiceURI = els.voiceSelect.value;
+    savePrefs();
+    if (state.isPlaying) { stopSpeaking(true); speakCurrent(); }
+  });
+
+  els.speedRange.addEventListener("input", function () {
+    state.rate = parseFloat(els.speedRange.value);
+    els.speedVal.textContent = state.rate.toFixed(2).replace(/0$/, "").replace(/\.$/, ".0") + "×";
+    savePrefs();
+    renderTimes();
+    if (state.isPlaying) { stopSpeaking(true); speakCurrent(); }
+  });
+
+  // ---------- speech engine ----------
+  var currentUtterance = null;
+
+  function speakCurrent() {
+    if (!("speechSynthesis" in window)) {
+      alert("This browser doesn't support the Web Speech API needed to read text aloud. Try Chrome, Edge, or Safari.");
+      return;
+    }
+    var chunk = state.chunks[state.currentIndex];
+    if (!chunk) { pausePlayback(); return; }
+    var utter = new SpeechSynthesisUtterance(chunk.text);
+    utter.rate = state.rate;
+    var voices = speechSynthesis.getVoices();
+    var voice = voices.find(function (v) { return v.voiceURI === prefs.voiceURI; });
+    if (voice) utter.voice = voice;
+    utter.onend = function () {
+      if (!state.isPlaying) return;
+      if (state.currentIndex < state.chunks.length - 1) {
+        state.currentIndex++;
+        renderPosition();
+        speakCurrent();
+      } else {
+        pausePlayback();
+      }
+    };
+    utter.onerror = function (e) {
+      if (e.error === "interrupted" || e.error === "canceled") return;
+      pausePlayback();
+    };
+    currentUtterance = utter;
+    speechSynthesis.speak(utter);
+  }
+
+  function stopSpeaking(keepPlayingFlag) {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    currentUtterance = null;
+    if (!keepPlayingFlag) state.isPlaying = false;
+  }
+
+  function startPlayback() {
+    state.isPlaying = true;
+    els.playIcon.classList.add("hidden");
+    els.pauseIcon.classList.remove("hidden");
+    els.playBtn.setAttribute("aria-label", "Pause");
+    els.playBtn.title = "Pause";
+    speakCurrent();
+  }
+
+  function pausePlayback() {
+    stopSpeaking();
+    els.playIcon.classList.remove("hidden");
+    els.pauseIcon.classList.add("hidden");
+    els.playBtn.setAttribute("aria-label", "Play");
+    els.playBtn.title = "Play";
+    saveResume();
+  }
+
+  els.playBtn.addEventListener("click", function () {
+    if (state.isPlaying) pausePlayback();
+    else startPlayback();
+  });
+  els.prevBtn.addEventListener("click", function () {
+    seekTo(Math.max(0, state.currentIndex - 1));
+  });
+  els.nextBtn.addEventListener("click", function () {
+    seekTo(Math.min(state.chunks.length - 1, state.currentIndex + 1));
+  });
+
+  function seekTo(index) {
+    var wasPlaying = state.isPlaying;
+    stopSpeaking();
+    state.currentIndex = index;
+    renderPosition(true);
+    saveResume();
+    if (wasPlaying) startPlayback();
+  }
+
+  els.rail.addEventListener("input", function () {
+    var idx = parseInt(els.rail.value, 10);
+    var wasPlaying = state.isPlaying;
+    if (wasPlaying) stopSpeaking();
+    state.currentIndex = idx;
+    renderPosition(true, true);
+    if (wasPlaying) startPlayback();
+    saveResume();
+  });
+
+  // ---------- rendering ----------
+  function fmtTime(minutes) {
+    var totalSeconds = Math.max(0, Math.round(minutes * 60));
+    var h = Math.floor(totalSeconds / 3600);
+    var m = Math.floor((totalSeconds % 3600) / 60);
+    var s = totalSeconds % 60;
+    if (h > 0) return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    return m + ":" + String(s).padStart(2, "0");
+  }
+
+  function renderTimes() {
+    var wpm = BASE_WPM * state.rate;
+    var wordsBefore = 0;
+    for (var i = 0; i < state.currentIndex; i++) wordsBefore += state.chunks[i].words;
+    var elapsedMin = wordsBefore / wpm;
+    var totalMin = state.totalWords / wpm;
+    var remainingMin = Math.max(0, totalMin - elapsedMin);
+    els.elapsedReadout.textContent = fmtTime(elapsedMin);
+    els.remainingReadout.textContent = fmtTime(remainingMin);
+    els.railStart.textContent = fmtTime(elapsedMin);
+    els.railEnd.textContent = "−" + fmtTime(remainingMin);
+  }
+
+  function renderPosition(scrollIntoView, skipRailSync) {
+    var chunk = state.chunks[state.currentIndex];
+    if (!chunk) return;
+    els.posReadout.textContent = chunk.page + " / " + state.numPages;
+
+    if (!skipRailSync) els.rail.value = String(state.currentIndex);
+    var pct = state.chunks.length > 1 ? (state.currentIndex / (state.chunks.length - 1)) * 100 : 0;
+    els.rail.style.setProperty("--pct", pct + "%");
+
+    var prevActive = els.textPane.querySelector(".sent.active");
+    if (prevActive) prevActive.classList.remove("active");
+    if (chunk.el) {
+      chunk.el.classList.add("active");
+      if (scrollIntoView) {
+        chunk.el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+    renderTimes();
+  }
+
+  window.addEventListener("beforeunload", function () {
+    if (state.isPlaying) saveResume();
+  });
+})();
+</script>
+</body>
+</html>
