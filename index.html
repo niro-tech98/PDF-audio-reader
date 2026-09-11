@@ -1032,15 +1032,35 @@
     }
   }
 
+  // Without cross-origin isolation (COOP/COEP headers), which a plain
+  // GitHub Pages site cannot send, onnxruntime-web's multi-threaded wasm
+  // backend can stall indefinitely instead of failing cleanly. WebGPU
+  // avoids that failure mode entirely and is much faster, so prefer it
+  // whenever the browser supports it; wasm is the fallback, and every
+  // long-running step below is time-boxed so a stall surfaces as an
+  // error instead of a silent infinite spinner.
+  var NEURAL_DEVICE = (typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm";
+  var NEURAL_DTYPE = NEURAL_DEVICE === "webgpu" ? "fp32" : "q8";
+  var NEURAL_LOAD_TIMEOUT_MS = 120000;
+  var NEURAL_GENERATE_TIMEOUT_MS = 45000;
+
+  function withTimeout(promise, ms, message) {
+    var timer;
+    var timeout = new Promise(function (_, reject) {
+      timer = setTimeout(function () { reject(new Error(message)); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function () { clearTimeout(timer); });
+  }
+
   function ensureNeuralLoaded() {
     if (neural.loadPromise) return neural.loadPromise;
     setNeuralStatus(true, "Downloading neural voice model (one-time, ~90MB)…", 0);
     var seen = {};
-    neural.loadPromise = import(KOKORO_JS_URL)
-      .then(function (mod) {
+    neural.loadPromise = withTimeout(
+      import(KOKORO_JS_URL).then(function (mod) {
         return mod.KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
-          dtype: "q8",
-          device: "wasm",
+          dtype: NEURAL_DTYPE,
+          device: NEURAL_DEVICE,
           progress_callback: function (data) {
             if (data.status !== "progress" || !data.file) return;
             seen[data.file] = data;
@@ -1052,7 +1072,10 @@
             if (total > 0) setNeuralStatus(true, "Downloading neural voice model…", (loaded / total) * 100);
           },
         });
-      })
+      }),
+      NEURAL_LOAD_TIMEOUT_MS,
+      "Timed out downloading or initializing the neural voice model."
+    )
       .then(function (tts) {
         neural.tts = tts;
         setNeuralStatus(false);
@@ -1062,7 +1085,7 @@
         console.error(err);
         neural.loadPromise = null;
         setNeuralStatus(false);
-        alert("Couldn't load the neural voice (it needs WebAssembly and a network connection for the one-time download). Switching back to your system voice.");
+        alert("Couldn't load the neural voice (it needs WebAssembly/WebGPU and a network connection for the one-time download). Switching back to your system voice.");
         selectEngine("system");
         throw err;
       });
@@ -1087,7 +1110,11 @@
     if (!chunk) return Promise.reject(new Error("no chunk"));
     var key = cacheKey(index);
     if (neural.cache.has(key)) return Promise.resolve(neural.cache.get(key));
-    return neural.tts.generate(chunk.text, { voice: prefs.neuralVoice }).then(function (audio) {
+    return withTimeout(
+      neural.tts.generate(chunk.text, { voice: prefs.neuralVoice }),
+      NEURAL_GENERATE_TIMEOUT_MS,
+      "Timed out generating speech for the current sentence."
+    ).then(function (audio) {
       var url = URL.createObjectURL(audio.toBlob());
       neural.cache.set(key, url);
       neural.cacheOrder.push(key);
@@ -1120,18 +1147,25 @@
     }
     var token = ++state.playToken;
     var index = state.currentIndex;
+    var genStartedAt = 0;
+    var tickTimer = null;
     ensureNeuralLoaded()
       .then(function () {
         if (token !== state.playToken) return null;
         var cached = neural.cache.get(cacheKey(index));
         if (cached) return cached;
+        genStartedAt = Date.now();
         setNeuralStatus(true, "Generating speech…", null);
+        tickTimer = setInterval(function () {
+          setNeuralStatus(true, "Generating speech… (" + Math.round((Date.now() - genStartedAt) / 1000) + "s)", null);
+        }, 1000);
         return generateNeuralAudio(index).then(function (url) {
           if (token === state.playToken) setNeuralStatus(false);
           return url;
         });
       })
       .then(function (url) {
+        if (tickTimer) clearInterval(tickTimer);
         if (!url || token !== state.playToken) return;
         neural.audioEl.src = url;
         neural.audioEl.playbackRate = state.rate;
@@ -1140,7 +1174,16 @@
         // gap waiting on the model when this one finishes.
         if (index < state.chunks.length - 1) generateNeuralAudio(index + 1).catch(function () {});
       })
-      .catch(function () {});
+      .catch(function (err) {
+        if (tickTimer) clearInterval(tickTimer);
+        if (token !== state.playToken) return;
+        setNeuralStatus(false);
+        if (/Timed out/.test(err && err.message)) {
+          console.error(err);
+          alert("Speech generation is taking unusually long on this device (no WebGPU support may make this slow). Switching back to your system voice for this session.");
+          selectEngine("system");
+        }
+      });
   }
 
   // ---------- speech engine ----------
