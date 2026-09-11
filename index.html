@@ -452,6 +452,7 @@
   .engine-opt + .engine-opt { border-left: 1px solid var(--line); }
   .engine-opt.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
   .engine-opt:disabled { opacity: 0.6; cursor: wait; }
+  .engine-hint { margin: 6px 0 0; font-size: 0.72rem; color: var(--ink-faint); }
 
   .neural-status .bar-track { height: 5px; }
   .neural-status label { color: var(--ink-dim); font-size: 0.7rem; text-transform: none; letter-spacing: 0; }
@@ -566,6 +567,7 @@
           <button type="button" class="engine-opt active" data-engine="system" role="radio" aria-checked="true">System</button>
           <button type="button" class="engine-opt" data-engine="neural" role="radio" aria-checked="false">Neural &mdash; sounds human</button>
         </div>
+        <p class="engine-hint">Neural downloads a ~90MB voice model the first time (cached after) &mdash; best on Wi&#8209;Fi.</p>
       </div>
       <div class="field">
         <label for="voice-select"><span>Voice</span></label>
@@ -1040,8 +1042,13 @@
   // long-running step below is time-boxed so a stall surfaces as an
   // error instead of a silent infinite spinner.
   var NEURAL_DEVICE = (typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm";
-  var NEURAL_DTYPE = NEURAL_DEVICE === "webgpu" ? "fp32" : "q8";
-  var NEURAL_LOAD_TIMEOUT_MS = 120000;
+  // Kept small and identical across devices on purpose: the model card
+  // suggests fp32 for WebGPU, but that's a ~300MB+ download versus q8's
+  // ~90MB. On a phone over cellular that difference is the gap between
+  // "loads" and "times out" - not worth it for a quality delta most
+  // listeners won't notice against a book being read aloud.
+  var NEURAL_DTYPE = "q8";
+  var NEURAL_LOAD_TIMEOUT_MS = 240000;
   var NEURAL_GENERATE_TIMEOUT_MS = 45000;
 
   function withTimeout(promise, ms, message) {
