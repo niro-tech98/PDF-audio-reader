@@ -454,6 +454,25 @@
   .engine-opt:disabled { opacity: 0.6; cursor: wait; }
   .engine-hint { margin: 6px 0 0; font-size: 0.72rem; color: var(--ink-faint); }
 
+  .voice-tip { flex-basis: 100%; }
+  .voice-tip summary {
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    cursor: pointer;
+    list-style-position: outside;
+  }
+  .voice-tip summary:hover { color: var(--ink); }
+  .voice-tip[open] summary { color: var(--ink); margin-bottom: 8px; }
+  .voice-tip p {
+    margin: 0 0 6px;
+    padding-left: 16px;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--ink-dim);
+  }
+  .voice-tip p:last-child { margin-bottom: 0; }
+  .voice-tip strong { color: var(--ink); }
+
   .neural-status .bar-track { height: 5px; }
   .neural-status label { color: var(--ink-dim); font-size: 0.7rem; text-transform: none; letter-spacing: 0; }
 
@@ -567,7 +586,7 @@
           <button type="button" class="engine-opt active" data-engine="system" role="radio" aria-checked="true">System</button>
           <button type="button" class="engine-opt" data-engine="neural" role="radio" aria-checked="false">Neural &mdash; sounds human</button>
         </div>
-        <p class="engine-hint">Neural downloads a ~90MB voice model the first time (cached after) &mdash; best on Wi&#8209;Fi.</p>
+        <p class="engine-hint">Downloads a ~90MB voice model the first time (cached after). Fast on a desktop browser with WebGPU (Chrome/Edge); without it &mdash; most phones today &mdash; generation can take 30+ seconds per sentence, so System is the better everyday choice on mobile for now.</p>
       </div>
       <div class="field">
         <label for="voice-select"><span>Voice</span></label>
@@ -577,6 +596,13 @@
         <label for="speed-range"><span>Speed</span><span id="speed-val">1.0&times;</span></label>
         <input type="range" class="speed" id="speed-range" min="0.5" max="2" step="0.05" value="1" />
       </div>
+      <details class="field voice-tip">
+        <summary>System voice sound robotic? Get a better one free</summary>
+        <p><strong>iPhone/iPad:</strong> Settings &rarr; Accessibility &rarr; Spoken Content &rarr; Voices &rarr; pick a language &rarr; download an &ldquo;Enhanced&rdquo; or &ldquo;Premium&rdquo; voice.</p>
+        <p><strong>Android:</strong> Settings &rarr; Accessibility (or System &rarr; Languages) &rarr; Text-to-speech output &rarr; install/update the higher-quality voice data for your engine.</p>
+        <p><strong>Windows:</strong> Settings &rarr; Time &amp; Language &rarr; Speech &rarr; Manage voices &rarr; add a &ldquo;Natural&rdquo; voice.</p>
+        <p>These run on your device instantly, at any length, with no download here &mdash; reload this page afterward and the new voice will show up in the list above.</p>
+      </details>
       <div class="field neural-status hidden" id="neural-status">
         <label><span id="neural-status-label">Preparing neural voice&hellip;</span><span id="neural-status-pct"></span></label>
         <div class="bar-track"><div class="bar-fill" id="neural-status-bar"></div></div>
