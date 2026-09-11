@@ -4,7 +4,7 @@ Drop in a PDF and have it read aloud in your browser: play/pause, skip
 sentence by sentence, scrub a progress rail, and watch elapsed/remaining
 time update live as it reads.
 
-**Live site:** https://niro-tech98.github.io/pdf-audio-reader/
+**Live site:** https://niro-tech98.github.io/PDF-audio-reader/
 
 Everything runs client-side — text extraction ([pdf.js](https://mozilla.github.io/pdf.js/))
 and speech (the browser's built-in [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API))
