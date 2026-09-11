@@ -396,6 +396,7 @@
     background: var(--surface-2);
   }
   .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 200px; min-width: 150px; }
+  .field.neural-status { flex-basis: 100%; }
   .field label {
     font-size: 0.68rem;
     letter-spacing: 0.06em;
@@ -430,6 +431,30 @@
   input[type="range"].speed::-moz-range-thumb {
     width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer;
   }
+
+  .engine-toggle {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .engine-opt {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--ink-dim);
+    font-family: "Public Sans", sans-serif;
+    font-size: 0.8rem;
+    padding: 7px 8px;
+    cursor: pointer;
+  }
+  .engine-opt + .engine-opt { border-left: 1px solid var(--line); }
+  .engine-opt.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .engine-opt:disabled { opacity: 0.6; cursor: wait; }
+
+  .neural-status .bar-track { height: 5px; }
+  .neural-status label { color: var(--ink-dim); font-size: 0.7rem; text-transform: none; letter-spacing: 0; }
 
   .hidden { display: none !important; }
 
@@ -536,6 +561,13 @@
 
     <div class="settings">
       <div class="field">
+        <label><span>Voice engine</span></label>
+        <div class="engine-toggle" id="engine-toggle" role="radiogroup" aria-label="Voice engine">
+          <button type="button" class="engine-opt active" data-engine="system" role="radio" aria-checked="true">System</button>
+          <button type="button" class="engine-opt" data-engine="neural" role="radio" aria-checked="false">Neural &mdash; sounds human</button>
+        </div>
+      </div>
+      <div class="field">
         <label for="voice-select"><span>Voice</span></label>
         <select id="voice-select"></select>
       </div>
@@ -543,11 +575,18 @@
         <label for="speed-range"><span>Speed</span><span id="speed-val">1.0&times;</span></label>
         <input type="range" class="speed" id="speed-range" min="0.5" max="2" step="0.05" value="1" />
       </div>
+      <div class="field neural-status hidden" id="neural-status">
+        <label><span id="neural-status-label">Preparing neural voice&hellip;</span><span id="neural-status-pct"></span></label>
+        <div class="bar-track"><div class="bar-fill" id="neural-status-bar"></div></div>
+      </div>
     </div>
   </div>
 
   <footer>
-    Text extraction and speech happen locally in your browser via pdf.js and the Web Speech API.<br />
+    Text extraction and system speech happen locally via pdf.js and the Web Speech API. The optional
+    neural voice (<a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noopener">Kokoro</a>,
+    open-source, Apache-2.0) also runs entirely on-device via WebAssembly &mdash; its one-time model
+    download is cached by your browser, and no text ever leaves your device either way.<br />
     Works best on text-based PDFs &mdash; scanned/image-only pages can't be read aloud.
   </footer>
 
@@ -560,6 +599,20 @@
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
 
   var BASE_WPM = 165; // average natural narration pace at 1.0x
+
+  var KOKORO_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+  var KOKORO_JS_URL = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
+  // Curated to the top-graded voices from the model card — the full list
+  // includes many early/thin-data voices that sound worse than a system
+  // voice, which would defeat the point of offering this.
+  var NEURAL_VOICES = [
+    { id: "af_heart", label: "Heart (US, female)" },
+    { id: "af_bella", label: "Bella (US, female)" },
+    { id: "am_fenrir", label: "Fenrir (US, male)" },
+    { id: "am_michael", label: "Michael (US, male)" },
+    { id: "bf_emma", label: "Emma (UK, female)" },
+    { id: "bm_george", label: "George (UK, male)" },
+  ];
 
   var els = {
     dropzonePanel: document.getElementById("dropzone-panel"),
@@ -590,6 +643,11 @@
     speedVal: document.getElementById("speed-val"),
     jumpForm: document.getElementById("jump-form"),
     pageJump: document.getElementById("page-jump"),
+    engineToggle: document.getElementById("engine-toggle"),
+    neuralStatus: document.getElementById("neural-status"),
+    neuralStatusLabel: document.getElementById("neural-status-label"),
+    neuralStatusPct: document.getElementById("neural-status-pct"),
+    neuralStatusBar: document.getElementById("neural-status-bar"),
   };
 
   var state = {
@@ -600,6 +658,8 @@
     numPages: 0,
     fileKey: null,
     rate: 1,
+    engine: "system",
+    playToken: 0,
   };
 
   // ---------- persisted settings ----------
@@ -607,12 +667,16 @@
   try { prefs = JSON.parse(localStorage.getItem("lectern:prefs") || "{}"); } catch (e) { prefs = {}; }
   if (prefs.rate) { state.rate = prefs.rate; els.speedRange.value = prefs.rate; }
   els.speedVal.textContent = Number(els.speedRange.value).toFixed(2).replace(/0$/, "").replace(/\.$/, ".0") + "×";
+  if (prefs.engine === "neural") state.engine = "neural";
+  if (!prefs.neuralVoice) prefs.neuralVoice = "af_heart";
 
   function savePrefs() {
     try {
       localStorage.setItem("lectern:prefs", JSON.stringify({
         rate: state.rate,
         voiceURI: prefs.voiceURI,
+        engine: state.engine,
+        neuralVoice: prefs.neuralVoice,
       }));
     } catch (e) {}
   }
@@ -664,6 +728,7 @@
   });
   els.swapBtn.addEventListener("click", function () {
     stopSpeaking();
+    clearNeuralCache();
     els.readerPanel.classList.add("hidden");
     els.dropzonePanel.classList.remove("hidden");
     els.fileInput.value = "";
@@ -675,6 +740,7 @@
       return;
     }
     stopSpeaking();
+    clearNeuralCache();
     els.dropzonePanel.classList.add("hidden");
     els.readerPanel.classList.add("hidden");
     els.loadingPanel.classList.remove("hidden");
@@ -842,12 +908,22 @@
 
   // ---------- voices ----------
   var voicesReady = false;
-  function populateVoices() {
+  function populateSystemVoices() {
     var voices = speechSynthesis.getVoices();
     if (!voices.length) return;
     voicesReady = true;
+    if (state.engine !== "system") return;
+    fillVoiceSelectSystem(voices);
+  }
+  function fillVoiceSelectSystem(voices) {
     els.voiceSelect.innerHTML = "";
-    voices.forEach(function (v, i) {
+    if (!voices.length) {
+      var placeholder = document.createElement("option");
+      placeholder.textContent = "No system voices found";
+      els.voiceSelect.appendChild(placeholder);
+      return;
+    }
+    voices.forEach(function (v) {
       var opt = document.createElement("option");
       opt.value = v.voiceURI;
       opt.textContent = v.name + " (" + v.lang + ")" + (v.default ? " — default" : "");
@@ -859,12 +935,27 @@
     els.voiceSelect.value = pick;
     prefs.voiceURI = pick;
   }
-  populateVoices();
+  function fillVoiceSelectNeural() {
+    els.voiceSelect.innerHTML = "";
+    NEURAL_VOICES.forEach(function (v) {
+      var opt = document.createElement("option");
+      opt.value = v.id;
+      opt.textContent = v.label;
+      els.voiceSelect.appendChild(opt);
+    });
+    els.voiceSelect.value = prefs.neuralVoice;
+  }
+  populateSystemVoices();
   if (typeof speechSynthesis !== "undefined") {
-    speechSynthesis.onvoiceschanged = populateVoices;
+    speechSynthesis.onvoiceschanged = populateSystemVoices;
   }
   els.voiceSelect.addEventListener("change", function () {
-    prefs.voiceURI = els.voiceSelect.value;
+    if (state.engine === "neural") {
+      prefs.neuralVoice = els.voiceSelect.value;
+      clearNeuralCache();
+    } else {
+      prefs.voiceURI = els.voiceSelect.value;
+    }
     savePrefs();
     if (state.isPlaying) { stopSpeaking(true); speakCurrent(); }
   });
@@ -874,13 +965,189 @@
     els.speedVal.textContent = state.rate.toFixed(2).replace(/0$/, "").replace(/\.$/, ".0") + "×";
     savePrefs();
     renderTimes();
-    if (state.isPlaying) { stopSpeaking(true); speakCurrent(); }
+    if (state.engine === "neural" && neural.audioEl) {
+      // The neural engine's audio is pre-rendered at a fixed pace, so a
+      // speed change adjusts the <audio> element's own playback rate
+      // instead of re-generating — instant, and avoids a second wait on
+      // the model for something the browser can already do for free.
+      neural.audioEl.playbackRate = state.rate;
+    } else if (state.isPlaying) {
+      stopSpeaking(true);
+      speakCurrent();
+    }
   });
+
+  // ---------- engine toggle ----------
+  Array.prototype.forEach.call(els.engineToggle.querySelectorAll(".engine-opt"), function (btn) {
+    btn.addEventListener("click", function () {
+      var target = btn.dataset.engine;
+      if (target === state.engine) return;
+      var wasPlaying = state.isPlaying;
+      stopSpeaking();
+      state.engine = target;
+      savePrefs();
+      Array.prototype.forEach.call(els.engineToggle.querySelectorAll(".engine-opt"), function (b) {
+        b.classList.toggle("active", b === btn);
+        b.setAttribute("aria-checked", String(b === btn));
+      });
+      if (target === "neural") {
+        fillVoiceSelectNeural();
+      } else {
+        fillVoiceSelectSystem(speechSynthesis.getVoices());
+      }
+      if (wasPlaying) startPlayback();
+    });
+  });
+  if (state.engine === "neural") {
+    Array.prototype.forEach.call(els.engineToggle.querySelectorAll(".engine-opt"), function (b) {
+      var isNeural = b.dataset.engine === "neural";
+      b.classList.toggle("active", isNeural);
+      b.setAttribute("aria-checked", String(isNeural));
+    });
+    fillVoiceSelectNeural();
+  }
+
+  // ---------- neural (Kokoro) engine ----------
+  // Loads and runs entirely in the browser via WebAssembly — the model
+  // weights are fetched once from the model's public Hugging Face repo
+  // and cached by the browser, same as any other static asset. No PDF
+  // text is ever sent anywhere for either engine.
+  var neural = {
+    tts: null,
+    loadPromise: null,
+    audioEl: null,
+    cache: new Map(), // "index|voice" -> object URL
+    cacheOrder: [],
+  };
+
+  function setNeuralStatus(visible, label, pct) {
+    els.neuralStatus.classList.toggle("hidden", !visible);
+    if (label != null) els.neuralStatusLabel.textContent = label;
+    if (pct != null) {
+      els.neuralStatusBar.style.width = pct + "%";
+      els.neuralStatusPct.textContent = Math.round(pct) + "%";
+    } else {
+      els.neuralStatusBar.style.width = "0%";
+      els.neuralStatusPct.textContent = "";
+    }
+  }
+
+  function ensureNeuralLoaded() {
+    if (neural.loadPromise) return neural.loadPromise;
+    setNeuralStatus(true, "Downloading neural voice model (one-time, ~90MB)…", 0);
+    var seen = {};
+    neural.loadPromise = import(KOKORO_JS_URL)
+      .then(function (mod) {
+        return mod.KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
+          dtype: "q8",
+          device: "wasm",
+          progress_callback: function (data) {
+            if (data.status !== "progress" || !data.file) return;
+            seen[data.file] = data;
+            var loaded = 0, total = 0;
+            Object.keys(seen).forEach(function (f) {
+              loaded += seen[f].loaded || 0;
+              total += seen[f].total || 0;
+            });
+            if (total > 0) setNeuralStatus(true, "Downloading neural voice model…", (loaded / total) * 100);
+          },
+        });
+      })
+      .then(function (tts) {
+        neural.tts = tts;
+        setNeuralStatus(false);
+        return tts;
+      })
+      .catch(function (err) {
+        console.error(err);
+        neural.loadPromise = null;
+        setNeuralStatus(false);
+        alert("Couldn't load the neural voice (it needs WebAssembly and a network connection for the one-time download). Switching back to your system voice.");
+        selectEngine("system");
+        throw err;
+      });
+    return neural.loadPromise;
+  }
+
+  function selectEngine(name) {
+    var btn = els.engineToggle.querySelector('.engine-opt[data-engine="' + name + '"]');
+    if (btn) btn.click();
+  }
+
+  function clearNeuralCache() {
+    neural.cache.forEach(function (url) { URL.revokeObjectURL(url); });
+    neural.cache.clear();
+    neural.cacheOrder = [];
+  }
+
+  function cacheKey(index) { return index + "|" + prefs.neuralVoice; }
+
+  function generateNeuralAudio(index) {
+    var chunk = state.chunks[index];
+    if (!chunk) return Promise.reject(new Error("no chunk"));
+    var key = cacheKey(index);
+    if (neural.cache.has(key)) return Promise.resolve(neural.cache.get(key));
+    return neural.tts.generate(chunk.text, { voice: prefs.neuralVoice }).then(function (audio) {
+      var url = URL.createObjectURL(audio.toBlob());
+      neural.cache.set(key, url);
+      neural.cacheOrder.push(key);
+      // Bound memory on long books: keep a rolling window of recent audio.
+      while (neural.cacheOrder.length > 40) {
+        var oldKey = neural.cacheOrder.shift();
+        var oldUrl = neural.cache.get(oldKey);
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+        neural.cache.delete(oldKey);
+      }
+      return url;
+    });
+  }
+
+  function speakCurrentNeural() {
+    var chunk = state.chunks[state.currentIndex];
+    if (!chunk) { pausePlayback(); return; }
+    if (!neural.audioEl) {
+      neural.audioEl = new Audio();
+      neural.audioEl.addEventListener("ended", function () {
+        if (!state.isPlaying || state.engine !== "neural") return;
+        if (state.currentIndex < state.chunks.length - 1) {
+          state.currentIndex++;
+          renderPosition();
+          speakCurrentNeural();
+        } else {
+          pausePlayback();
+        }
+      });
+    }
+    var token = ++state.playToken;
+    var index = state.currentIndex;
+    ensureNeuralLoaded()
+      .then(function () {
+        if (token !== state.playToken) return null;
+        var cached = neural.cache.get(cacheKey(index));
+        if (cached) return cached;
+        setNeuralStatus(true, "Generating speech…", null);
+        return generateNeuralAudio(index).then(function (url) {
+          if (token === state.playToken) setNeuralStatus(false);
+          return url;
+        });
+      })
+      .then(function (url) {
+        if (!url || token !== state.playToken) return;
+        neural.audioEl.src = url;
+        neural.audioEl.playbackRate = state.rate;
+        neural.audioEl.play().catch(function () {});
+        // Pre-render the next sentence in the background so there's no
+        // gap waiting on the model when this one finishes.
+        if (index < state.chunks.length - 1) generateNeuralAudio(index + 1).catch(function () {});
+      })
+      .catch(function () {});
+  }
 
   // ---------- speech engine ----------
   var currentUtterance = null;
 
   function speakCurrent() {
+    if (state.engine === "neural") { speakCurrentNeural(); return; }
     if (!("speechSynthesis" in window)) {
       alert("This browser doesn't support the Web Speech API needed to read text aloud. Try Chrome, Edge, or Safari.");
       return;
@@ -913,6 +1180,9 @@
   function stopSpeaking(keepPlayingFlag) {
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     currentUtterance = null;
+    state.playToken++;
+    if (neural.audioEl) neural.audioEl.pause();
+    setNeuralStatus(false);
     if (!keepPlayingFlag) state.isPlaying = false;
   }
 
