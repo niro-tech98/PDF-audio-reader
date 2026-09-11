@@ -280,6 +280,39 @@
     margin-top: 3px;
   }
 
+  /* ---------- Jump to page ---------- */
+  .jump-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 22px 0;
+  }
+  .jump-row label {
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+  }
+  .jump-row input[type="number"] {
+    width: 4.5em;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.85rem;
+    background: var(--surface-2);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 8px;
+    -moz-appearance: textfield;
+  }
+  .jump-row .jump-go {
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 100px;
+    padding: 5px 14px;
+    cursor: pointer;
+  }
+  .jump-row .jump-go:hover { color: var(--ink); }
+
   /* ---------- Progress rail ---------- */
   .rail-wrap { padding: 18px 22px 6px; }
   input[type="range"].rail {
@@ -477,6 +510,12 @@
       </div>
     </div>
 
+    <form class="jump-row" id="jump-form">
+      <label for="page-jump">Jump to page</label>
+      <input type="number" id="page-jump" min="1" inputmode="numeric" placeholder="1" />
+      <button type="submit" class="jump-go">Go</button>
+    </form>
+
     <div class="rail-wrap">
       <input type="range" class="rail" id="rail" min="0" max="1000" value="0" aria-label="Reading progress" />
       <div class="rail-ticks"><span id="rail-start">0:00</span><span id="rail-end">0:00</span></div>
@@ -549,6 +588,8 @@
     voiceSelect: document.getElementById("voice-select"),
     speedRange: document.getElementById("speed-range"),
     speedVal: document.getElementById("speed-val"),
+    jumpForm: document.getElementById("jump-form"),
+    pageJump: document.getElementById("page-jump"),
   };
 
   var state = {
@@ -727,10 +768,27 @@
     state.totalWords = chunks.reduce(function (sum, c) { return sum + c.words; }, 0);
     state.currentIndex = Math.min(loadResumeIndex(state.fileKey), chunks.length - 1);
 
-    buildTextPane();
+    // Index the first chunk of each page once, up front — cheap even for a
+    // several-hundred-page book, and lets page-jump and windowed rendering
+    // avoid ever scanning the whole chunk list.
+    state.pageFirstIndex = {};
+    // Prefix sums of word counts, so "elapsed time" at any position is an
+    // O(1) lookup instead of re-summing everything read so far — matters
+    // once a book runs to thousands of sentences and the slider fires this
+    // on every drag frame.
+    state.cumWords = new Array(chunks.length + 1);
+    state.cumWords[0] = 0;
+    chunks.forEach(function (c, i) {
+      if (!(c.page in state.pageFirstIndex)) state.pageFirstIndex[c.page] = i;
+      state.cumWords[i + 1] = state.cumWords[i] + c.words;
+    });
+    state.renderedPage = null;
+
     els.docTitle.textContent = fileName.replace(/\.pdf$/i, "");
     els.docMeta.textContent = state.numPages + (state.numPages === 1 ? " page" : " pages") + " · " + state.totalWords.toLocaleString() + " words";
     els.rail.max = String(Math.max(chunks.length - 1, 1));
+    els.pageJump.max = String(state.numPages);
+    els.pageJump.placeholder = "1–" + state.numPages;
 
     els.loadingPanel.classList.add("hidden");
     els.readerPanel.classList.remove("hidden");
@@ -738,31 +796,48 @@
     renderPosition(true);
   }
 
-  function buildTextPane() {
+  // Renders only the sentences belonging to one page of the book. For a
+  // book-length PDF, building DOM nodes for every sentence up front would
+  // mean tens of thousands of elements sitting in memory; instead we swap
+  // in just the current page's worth whenever the reader crosses a page
+  // boundary, so the preview pane stays light regardless of book length.
+  function ensurePageRendered(pageNumber) {
+    if (state.renderedPage === pageNumber) return;
+    state.renderedPage = pageNumber;
     els.textPane.innerHTML = "";
-    var lastPage = null;
-    var currentParaEl = null;
-    state.chunks.forEach(function (chunk, i) {
-      if (chunk.page !== lastPage) {
-        var tag = document.createElement("span");
-        tag.className = "page-tag";
-        tag.textContent = "Page " + chunk.page;
-        els.textPane.appendChild(tag);
-        currentParaEl = document.createElement("p");
-        currentParaEl.className = "blk";
-        els.textPane.appendChild(currentParaEl);
-        lastPage = chunk.page;
-      }
+
+    var tag = document.createElement("span");
+    tag.className = "page-tag";
+    tag.textContent = "Page " + pageNumber;
+    els.textPane.appendChild(tag);
+
+    var para = document.createElement("p");
+    para.className = "blk";
+    els.textPane.appendChild(para);
+
+    var startIdx = firstChunkIndexForPage(pageNumber);
+    for (var i = startIdx; i < state.chunks.length && state.chunks[i].page === pageNumber; i++) {
+      var chunk = state.chunks[i];
       var span = document.createElement("span");
       span.className = "sent";
       span.textContent = chunk.text + " ";
       span.dataset.index = i;
       span.addEventListener("click", function () {
-        seekTo(i);
+        seekTo(parseInt(this.dataset.index, 10));
       });
-      currentParaEl.appendChild(span);
+      para.appendChild(span);
       chunk.el = span;
-    });
+    }
+  }
+
+  function firstChunkIndexForPage(target) {
+    for (var p = target; p <= state.numPages; p++) {
+      if (state.pageFirstIndex[p] !== undefined) return state.pageFirstIndex[p];
+    }
+    for (var p2 = target; p2 >= 1; p2--) {
+      if (state.pageFirstIndex[p2] !== undefined) return state.pageFirstIndex[p2];
+    }
+    return 0;
   }
 
   // ---------- voices ----------
@@ -879,6 +954,16 @@
     if (wasPlaying) startPlayback();
   }
 
+  els.jumpForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var target = parseInt(els.pageJump.value, 10);
+    if (!target || target < 1) return;
+    target = Math.min(target, state.numPages);
+    seekTo(firstChunkIndexForPage(target));
+    els.pageJump.value = "";
+    els.pageJump.blur();
+  });
+
   els.rail.addEventListener("input", function () {
     var idx = parseInt(els.rail.value, 10);
     var wasPlaying = state.isPlaying;
@@ -901,8 +986,7 @@
 
   function renderTimes() {
     var wpm = BASE_WPM * state.rate;
-    var wordsBefore = 0;
-    for (var i = 0; i < state.currentIndex; i++) wordsBefore += state.chunks[i].words;
+    var wordsBefore = state.cumWords[state.currentIndex];
     var elapsedMin = wordsBefore / wpm;
     var totalMin = state.totalWords / wpm;
     var remainingMin = Math.max(0, totalMin - elapsedMin);
@@ -921,6 +1005,7 @@
     var pct = state.chunks.length > 1 ? (state.currentIndex / (state.chunks.length - 1)) * 100 : 0;
     els.rail.style.setProperty("--pct", pct + "%");
 
+    ensurePageRendered(chunk.page);
     var prevActive = els.textPane.querySelector(".sent.active");
     if (prevActive) prevActive.classList.remove("active");
     if (chunk.el) {
