@@ -1,4 +1,4 @@
-# Lectern — PDF Audio Reader
+# Rokel — PDF Audio Reader
 
 Drop in a PDF and have it read aloud in your browser: play/pause, skip
 sentence by sentence, scrub a progress rail, and watch elapsed/remaining

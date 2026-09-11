@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Lectern &mdash; PDF Audio Reader</title>
+<title>Rokel &mdash; PDF Audio Reader</title>
 <meta name="description" content="Upload a PDF and have it read aloud, right in your browser. No uploads, no accounts." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%2314161c'/%3E%3Cpath d='M20 30 h60 M20 50 h60 M20 70 h35' stroke='%23d98a3d' stroke-width='8' stroke-linecap='round'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -485,7 +485,7 @@
   <header class="top">
     <div>
       <div class="brand">
-        <h1>Lectern</h1>
+        <h1>Rokel</h1>
         <span class="mark">for PDFs</span>
       </div>
       <p class="tagline">Upload a PDF, listen to it read aloud, pick up right where you left off.</p>
@@ -664,7 +664,7 @@
 
   // ---------- persisted settings ----------
   var prefs = {};
-  try { prefs = JSON.parse(localStorage.getItem("lectern:prefs") || "{}"); } catch (e) { prefs = {}; }
+  try { prefs = JSON.parse(localStorage.getItem("rokel:prefs") || "{}"); } catch (e) { prefs = {}; }
   if (prefs.rate) { state.rate = prefs.rate; els.speedRange.value = prefs.rate; }
   els.speedVal.textContent = Number(els.speedRange.value).toFixed(2).replace(/0$/, "").replace(/\.$/, ".0") + "×";
   if (prefs.engine === "neural") state.engine = "neural";
@@ -672,7 +672,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem("lectern:prefs", JSON.stringify({
+      localStorage.setItem("rokel:prefs", JSON.stringify({
         rate: state.rate,
         voiceURI: prefs.voiceURI,
         engine: state.engine,
@@ -684,20 +684,20 @@
   function saveResume() {
     if (!state.fileKey) return;
     try {
-      var map = JSON.parse(localStorage.getItem("lectern:resume") || "{}");
+      var map = JSON.parse(localStorage.getItem("rokel:resume") || "{}");
       map[state.fileKey] = { index: state.currentIndex, savedAt: Date.now() };
       var keys = Object.keys(map);
       if (keys.length > 20) {
         keys.sort(function (a, b) { return map[a].savedAt - map[b].savedAt; });
         delete map[keys[0]];
       }
-      localStorage.setItem("lectern:resume", JSON.stringify(map));
+      localStorage.setItem("rokel:resume", JSON.stringify(map));
     } catch (e) {}
   }
 
   function loadResumeIndex(key) {
     try {
-      var map = JSON.parse(localStorage.getItem("lectern:resume") || "{}");
+      var map = JSON.parse(localStorage.getItem("rokel:resume") || "{}");
       return map[key] ? map[key].index : 0;
     } catch (e) { return 0; }
   }
