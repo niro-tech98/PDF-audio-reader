@@ -13,7 +13,8 @@
 <script type="importmap">
 {
   "imports": {
-    "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.min.js"
+    "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.min.js",
+    "onnxruntime-web/wasm": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.wasm.min.js"
   }
 }
 </script>
@@ -653,7 +654,14 @@
   // CPU, no GPU). That architecture is the point - Kokoro's heavier
   // pipeline needed WebGPU to be fast and was still too slow on every
   // phone tested even with it; Piper doesn't need a GPU to begin with.
-  var VITS_WEB_URL = "https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/dist/vits-web.js";
+  // The original @diffusionstudio/vits-web rebuilds its ~60MB ONNX
+  // session from scratch on every single predict() call - costly per
+  // sentence (the pause between sentences) and, worse, never frees the
+  // previous session, so memory climbs until the tab is killed after
+  // enough sentences (the crash). This fork caches one session as a
+  // singleton and reuses it across calls, which is what we actually want
+  // for reading a whole book sentence-by-sentence.
+  var VITS_WEB_URL = "https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.5/dist/piper-tts-web.js";
   // Curated to medium/high-quality English voices - Piper also ships many
   // low/x_low quality ones that sound worse than a decent system voice.
   var NEURAL_VOICES = [
@@ -663,6 +671,7 @@
     { id: "en_US-hfc_female-medium", label: "HFC Female (US)" },
     { id: "en_GB-alan-medium", label: "Alan (UK, male)" },
     { id: "en_GB-jenny_dioco-medium", label: "Jenny (UK, female)" },
+    { id: "en_US-lessac-high", label: "Lessac HQ (US, male) — bigger download, more natural" },
   ];
 
   var els = {
@@ -839,10 +848,32 @@
       pdf.getPage(pageIndex).then(function (page) {
         return page.getTextContent();
       }).then(function (content) {
-        var lines = [];
         var currentLine = "";
+        var lastItem = null;
         content.items.forEach(function (item) {
-          currentLine += item.str + (item.hasEOL ? "\n" : (item.str && !/\s$/.test(item.str) ? " " : ""));
+          if (!item.str) { lastItem = null; return; }
+          // pdf.js frequently splits a single word across multiple text-show
+          // items (kerning pairs, font subsetting, justified layout) with no
+          // real space between them. Blindly inserting a space after every
+          // item - the previous approach - fragments words like "generous"
+          // into "gener ous". Instead, only insert one where the actual
+          // horizontal gap between glyph runs (from their transform
+          // matrices) is wide enough to be a real word break, relative to
+          // the text's own font size.
+          var sep = "";
+          if (lastItem && !/\s$/.test(lastItem.str) && !/^\s/.test(item.str)) {
+            var pt = lastItem.transform, ct = item.transform;
+            var fontSize = Math.hypot(ct[0], ct[1]) || Math.hypot(pt[0], pt[1]) || 1;
+            var sameLine = Math.abs(ct[5] - pt[5]) < fontSize * 0.5;
+            if (!sameLine) {
+              sep = " ";
+            } else {
+              var gap = ct[4] - (pt[4] + (lastItem.width || 0));
+              if (gap > fontSize * 0.15) sep = " ";
+            }
+          }
+          currentLine += sep + item.str + (item.hasEOL ? "\n" : "");
+          lastItem = item.hasEOL ? null : item;
         });
         var rawBlocks = currentLine.split(/\n\s*\n|\n(?=\s{0,2}\S)/).join("\n").split(/\n+/);
         // Merge into paragraphs: treat consecutive non-empty lines as one flowing block
