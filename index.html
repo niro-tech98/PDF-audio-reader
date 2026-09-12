@@ -473,6 +473,18 @@
   .voice-tip p:last-child { margin-bottom: 0; }
   .voice-tip strong { color: var(--ink); }
 
+  .refresh-voices {
+    border: none;
+    background: transparent;
+    color: var(--ink-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    padding: 0;
+  }
+  .refresh-voices:hover { color: var(--accent); }
+
   .neural-status .bar-track { height: 5px; }
   .neural-status label { color: var(--ink-dim); font-size: 0.7rem; text-transform: none; letter-spacing: 0; }
 
@@ -589,7 +601,7 @@
         <p class="engine-hint">Downloads a ~90MB voice model the first time (cached after). Fast on a desktop browser with WebGPU (Chrome/Edge); without it &mdash; most phones today &mdash; generation can take 30+ seconds per sentence, so System is the better everyday choice on mobile for now.</p>
       </div>
       <div class="field">
-        <label for="voice-select"><span>Voice</span></label>
+        <label for="voice-select"><span>Voice</span><button type="button" class="refresh-voices" id="refresh-voices-btn" title="Re-check for newly installed voices">&#8635; Refresh</button></label>
         <select id="voice-select"></select>
       </div>
       <div class="field">
@@ -671,6 +683,7 @@
     speedVal: document.getElementById("speed-val"),
     jumpForm: document.getElementById("jump-form"),
     pageJump: document.getElementById("page-jump"),
+    refreshVoicesBtn: document.getElementById("refresh-voices-btn"),
     engineToggle: document.getElementById("engine-toggle"),
     neuralStatus: document.getElementById("neural-status"),
     neuralStatusLabel: document.getElementById("neural-status-label"),
@@ -986,6 +999,16 @@
     }
     savePrefs();
     if (state.isPlaying) { stopSpeaking(true); speakCurrent(); }
+  });
+
+  els.refreshVoicesBtn.addEventListener("click", function () {
+    if (state.engine !== "system") return;
+    var before = speechSynthesis.getVoices().length;
+    fillVoiceSelectSystem(speechSynthesis.getVoices());
+    var after = els.voiceSelect.options.length;
+    var original = els.refreshVoicesBtn.textContent;
+    els.refreshVoicesBtn.textContent = after > before ? "Found " + after + "!" : "No change";
+    setTimeout(function () { els.refreshVoicesBtn.textContent = original; }, 1800);
   });
 
   els.speedRange.addEventListener("input", function () {
