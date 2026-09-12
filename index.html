@@ -1065,6 +1065,7 @@
   // text is ever sent anywhere for either engine.
   var neural = {
     tts: null,
+    device: null,
     loadPromise: null,
     audioEl: null,
     cache: new Map(), // "index|voice" -> object URL
@@ -1090,7 +1091,19 @@
   // whenever the browser supports it; wasm is the fallback, and every
   // long-running step below is time-boxed so a stall surfaces as an
   // error instead of a silent infinite spinner.
-  var NEURAL_DEVICE = (typeof navigator !== "undefined" && navigator.gpu) ? "webgpu" : "wasm";
+  // navigator.gpu just means the API exists - it doesn't mean a GPU
+  // adapter is actually obtainable (Safari in particular can expose the
+  // API and still fail to hand back a usable adapter). Request one for
+  // real so the device we report matches the device we actually use,
+  // instead of a guess based on API presence alone.
+  var neuralDevicePromise = null;
+  function detectNeuralDevice() {
+    if (neuralDevicePromise) return neuralDevicePromise;
+    neuralDevicePromise = (typeof navigator !== "undefined" && navigator.gpu && navigator.gpu.requestAdapter)
+      ? navigator.gpu.requestAdapter().then(function (adapter) { return adapter ? "webgpu" : "wasm"; }).catch(function () { return "wasm"; })
+      : Promise.resolve("wasm");
+    return neuralDevicePromise;
+  }
   // Kept small and identical across devices on purpose: the model card
   // suggests fp32 for WebGPU, but that's a ~300MB+ download versus q8's
   // ~90MB. On a phone over cellular that difference is the gap between
@@ -1113,20 +1126,23 @@
     setNeuralStatus(true, "Downloading neural voice model (one-time, ~90MB)…", 0);
     var seen = {};
     neural.loadPromise = withTimeout(
-      import(KOKORO_JS_URL).then(function (mod) {
-        return mod.KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
-          dtype: NEURAL_DTYPE,
-          device: NEURAL_DEVICE,
-          progress_callback: function (data) {
-            if (data.status !== "progress" || !data.file) return;
-            seen[data.file] = data;
-            var loaded = 0, total = 0;
-            Object.keys(seen).forEach(function (f) {
-              loaded += seen[f].loaded || 0;
-              total += seen[f].total || 0;
-            });
-            if (total > 0) setNeuralStatus(true, "Downloading neural voice model…", (loaded / total) * 100);
-          },
+      detectNeuralDevice().then(function (device) {
+        neural.device = device;
+        return import(KOKORO_JS_URL).then(function (mod) {
+          return mod.KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
+            dtype: NEURAL_DTYPE,
+            device: device,
+            progress_callback: function (data) {
+              if (data.status !== "progress" || !data.file) return;
+              seen[data.file] = data;
+              var loaded = 0, total = 0;
+              Object.keys(seen).forEach(function (f) {
+                loaded += seen[f].loaded || 0;
+                total += seen[f].total || 0;
+              });
+              if (total > 0) setNeuralStatus(true, "Downloading neural voice model… (" + device + ")", (loaded / total) * 100);
+            },
+          });
         });
       }),
       NEURAL_LOAD_TIMEOUT_MS,
@@ -1211,9 +1227,10 @@
         var cached = neural.cache.get(cacheKey(index));
         if (cached) return cached;
         genStartedAt = Date.now();
-        setNeuralStatus(true, "Generating speech…", null);
+        var deviceTag = neural.device ? " [" + neural.device + "]" : "";
+        setNeuralStatus(true, "Generating speech…" + deviceTag, null);
         tickTimer = setInterval(function () {
-          setNeuralStatus(true, "Generating speech… (" + Math.round((Date.now() - genStartedAt) / 1000) + "s)", null);
+          setNeuralStatus(true, "Generating speech… (" + Math.round((Date.now() - genStartedAt) / 1000) + "s)" + deviceTag, null);
         }, 1000);
         return generateNeuralAudio(index).then(function (url) {
           if (token === state.playToken) setNeuralStatus(false);
@@ -1236,7 +1253,7 @@
         setNeuralStatus(false);
         if (/Timed out/.test(err && err.message)) {
           console.error(err);
-          alert("Speech generation is taking unusually long on this device (no WebGPU support may make this slow). Switching back to your system voice for this session.");
+          alert("Speech generation is taking unusually long on this device (used: " + (neural.device || "unknown") + "). Switching back to your system voice for this session.");
           selectEngine("system");
         }
       });
