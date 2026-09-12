@@ -10,6 +10,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.min.js"
+  }
+}
+</script>
 <style>
   :root {
     --bg: #f0f1f4;
@@ -598,7 +605,7 @@
           <button type="button" class="engine-opt active" data-engine="system" role="radio" aria-checked="true">System</button>
           <button type="button" class="engine-opt" data-engine="neural" role="radio" aria-checked="false">Neural &mdash; sounds human</button>
         </div>
-        <p class="engine-hint">Downloads a ~90MB voice model the first time (cached after). Fast on a desktop browser with WebGPU (Chrome/Edge); without it &mdash; most phones today &mdash; generation can take 30+ seconds per sentence, so System is the better everyday choice on mobile for now.</p>
+        <p class="engine-hint">Downloads a ~60MB voice model the first time it's used (cached after, including on iPhone). Built to run on ordinary CPUs &mdash; no GPU needed.</p>
       </div>
       <div class="field">
         <label for="voice-select"><span>Voice</span><button type="button" class="refresh-voices" id="refresh-voices-btn" title="Re-check for newly installed voices">&#8635; Refresh</button></label>
@@ -624,8 +631,8 @@
 
   <footer>
     Text extraction and system speech happen locally via pdf.js and the Web Speech API. The optional
-    neural voice (<a href="https://github.com/hexgrad/kokoro" target="_blank" rel="noopener">Kokoro</a>,
-    open-source, Apache-2.0) also runs entirely on-device via WebAssembly &mdash; its one-time model
+    neural voice (<a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener">Piper</a>,
+    open-source, MIT) also runs entirely on-device via WebAssembly &mdash; its one-time model
     download is cached by your browser, and no text ever leaves your device either way.<br />
     Works best on text-based PDFs &mdash; scanned/image-only pages can't be read aloud.
   </footer>
@@ -640,18 +647,22 @@
 
   var BASE_WPM = 165; // average natural narration pace at 1.0x
 
-  var KOKORO_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-  var KOKORO_JS_URL = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
-  // Curated to the top-graded voices from the model card — the full list
-  // includes many early/thin-data voices that sound worse than a system
-  // voice, which would defeat the point of offering this.
+  // Piper/VITS (rhasspy/piper, MIT) via the @diffusionstudio/vits-web
+  // wrapper: a single-pass, non-autoregressive model built specifically
+  // to run in real time on bare CPU (it's designed for a Raspberry Pi's
+  // CPU, no GPU). That architecture is the point - Kokoro's heavier
+  // pipeline needed WebGPU to be fast and was still too slow on every
+  // phone tested even with it; Piper doesn't need a GPU to begin with.
+  var VITS_WEB_URL = "https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/dist/vits-web.js";
+  // Curated to medium/high-quality English voices - Piper also ships many
+  // low/x_low quality ones that sound worse than a decent system voice.
   var NEURAL_VOICES = [
-    { id: "af_heart", label: "Heart (US, female)" },
-    { id: "af_bella", label: "Bella (US, female)" },
-    { id: "am_fenrir", label: "Fenrir (US, male)" },
-    { id: "am_michael", label: "Michael (US, male)" },
-    { id: "bf_emma", label: "Emma (UK, female)" },
-    { id: "bm_george", label: "George (UK, male)" },
+    { id: "en_US-lessac-medium", label: "Lessac (US, male)" },
+    { id: "en_US-amy-medium", label: "Amy (US, female)" },
+    { id: "en_US-ryan-medium", label: "Ryan (US, male)" },
+    { id: "en_US-hfc_female-medium", label: "HFC Female (US)" },
+    { id: "en_GB-alan-medium", label: "Alan (UK, male)" },
+    { id: "en_GB-jenny_dioco-medium", label: "Jenny (UK, female)" },
   ];
 
   var els = {
@@ -1058,14 +1069,15 @@
     fillVoiceSelectNeural();
   }
 
-  // ---------- neural (Kokoro) engine ----------
+  // ---------- neural (Piper/VITS) engine ----------
   // Loads and runs entirely in the browser via WebAssembly — the model
-  // weights are fetched once from the model's public Hugging Face repo
-  // and cached by the browser, same as any other static asset. No PDF
-  // text is ever sent anywhere for either engine.
+  // weights are fetched once from Piper's public voice repo and cached
+  // by the browser (vits-web actually persists them to the Origin
+  // Private File System, so they survive even more reliably than a
+  // plain HTTP cache entry). No PDF text is ever sent anywhere for
+  // either engine.
   var neural = {
-    tts: null,
-    device: null,
+    module: null,
     loadPromise: null,
     audioEl: null,
     cache: new Map(), // "index|voice" -> object URL
@@ -1084,34 +1096,8 @@
     }
   }
 
-  // Without cross-origin isolation (COOP/COEP headers), which a plain
-  // GitHub Pages site cannot send, onnxruntime-web's multi-threaded wasm
-  // backend can stall indefinitely instead of failing cleanly. WebGPU
-  // avoids that failure mode entirely and is much faster, so prefer it
-  // whenever the browser supports it; wasm is the fallback, and every
-  // long-running step below is time-boxed so a stall surfaces as an
-  // error instead of a silent infinite spinner.
-  // navigator.gpu just means the API exists - it doesn't mean a GPU
-  // adapter is actually obtainable (Safari in particular can expose the
-  // API and still fail to hand back a usable adapter). Request one for
-  // real so the device we report matches the device we actually use,
-  // instead of a guess based on API presence alone.
-  var neuralDevicePromise = null;
-  function detectNeuralDevice() {
-    if (neuralDevicePromise) return neuralDevicePromise;
-    neuralDevicePromise = (typeof navigator !== "undefined" && navigator.gpu && navigator.gpu.requestAdapter)
-      ? navigator.gpu.requestAdapter().then(function (adapter) { return adapter ? "webgpu" : "wasm"; }).catch(function () { return "wasm"; })
-      : Promise.resolve("wasm");
-    return neuralDevicePromise;
-  }
-  // Kept small and identical across devices on purpose: the model card
-  // suggests fp32 for WebGPU, but that's a ~300MB+ download versus q8's
-  // ~90MB. On a phone over cellular that difference is the gap between
-  // "loads" and "times out" - not worth it for a quality delta most
-  // listeners won't notice against a book being read aloud.
-  var NEURAL_DTYPE = "q8";
   var NEURAL_LOAD_TIMEOUT_MS = 240000;
-  var NEURAL_GENERATE_TIMEOUT_MS = 45000;
+  var NEURAL_GENERATE_TIMEOUT_MS = 30000;
 
   function withTimeout(promise, ms, message) {
     var timer;
@@ -1123,41 +1109,22 @@
 
   function ensureNeuralLoaded() {
     if (neural.loadPromise) return neural.loadPromise;
-    setNeuralStatus(true, "Downloading neural voice model (one-time, ~90MB)…", 0);
-    var seen = {};
+    setNeuralStatus(true, "Loading neural voice engine…", null);
     neural.loadPromise = withTimeout(
-      detectNeuralDevice().then(function (device) {
-        neural.device = device;
-        return import(KOKORO_JS_URL).then(function (mod) {
-          return mod.KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
-            dtype: NEURAL_DTYPE,
-            device: device,
-            progress_callback: function (data) {
-              if (data.status !== "progress" || !data.file) return;
-              seen[data.file] = data;
-              var loaded = 0, total = 0;
-              Object.keys(seen).forEach(function (f) {
-                loaded += seen[f].loaded || 0;
-                total += seen[f].total || 0;
-              });
-              if (total > 0) setNeuralStatus(true, "Downloading neural voice model… (" + device + ")", (loaded / total) * 100);
-            },
-          });
-        });
-      }),
+      import(VITS_WEB_URL),
       NEURAL_LOAD_TIMEOUT_MS,
-      "Timed out downloading or initializing the neural voice model."
+      "Timed out loading the neural voice engine."
     )
-      .then(function (tts) {
-        neural.tts = tts;
+      .then(function (mod) {
+        neural.module = mod;
         setNeuralStatus(false);
-        return tts;
+        return mod;
       })
       .catch(function (err) {
         console.error(err);
         neural.loadPromise = null;
         setNeuralStatus(false);
-        alert("Couldn't load the neural voice (it needs WebAssembly/WebGPU and a network connection for the one-time download). Switching back to your system voice.");
+        alert("Couldn't load the neural voice engine (needs WebAssembly and a network connection). Switching back to your system voice.");
         selectEngine("system");
         throw err;
       });
@@ -1183,11 +1150,17 @@
     var key = cacheKey(index);
     if (neural.cache.has(key)) return Promise.resolve(neural.cache.get(key));
     return withTimeout(
-      neural.tts.generate(chunk.text, { voice: prefs.neuralVoice }),
+      neural.module.predict(
+        { text: chunk.text, voiceId: prefs.neuralVoice },
+        function (progress) {
+          var pct = progress.total > 0 ? (progress.loaded / progress.total) * 100 : null;
+          setNeuralStatus(true, "Downloading neural voice model…", pct);
+        }
+      ),
       NEURAL_GENERATE_TIMEOUT_MS,
       "Timed out generating speech for the current sentence."
-    ).then(function (audio) {
-      var url = URL.createObjectURL(audio.toBlob());
+    ).then(function (blob) {
+      var url = URL.createObjectURL(blob);
       neural.cache.set(key, url);
       neural.cacheOrder.push(key);
       // Bound memory on long books: keep a rolling window of recent audio.
@@ -1227,10 +1200,9 @@
         var cached = neural.cache.get(cacheKey(index));
         if (cached) return cached;
         genStartedAt = Date.now();
-        var deviceTag = neural.device ? " [" + neural.device + "]" : "";
-        setNeuralStatus(true, "Generating speech…" + deviceTag, null);
+        setNeuralStatus(true, "Generating speech…", null);
         tickTimer = setInterval(function () {
-          setNeuralStatus(true, "Generating speech… (" + Math.round((Date.now() - genStartedAt) / 1000) + "s)" + deviceTag, null);
+          setNeuralStatus(true, "Generating speech… (" + Math.round((Date.now() - genStartedAt) / 1000) + "s)", null);
         }, 1000);
         return generateNeuralAudio(index).then(function (url) {
           if (token === state.playToken) setNeuralStatus(false);
@@ -1253,7 +1225,7 @@
         setNeuralStatus(false);
         if (/Timed out/.test(err && err.message)) {
           console.error(err);
-          alert("Speech generation is taking unusually long on this device (used: " + (neural.device || "unknown") + "). Switching back to your system voice for this session.");
+          alert("Speech generation is taking unusually long on this device. Switching back to your system voice for this session.");
           selectEngine("system");
         }
       });
